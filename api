@@ -1,0 +1,68 @@
+// api/generate.js
+import axios from "axios";
+import cheerio from "cheerio";
+
+const ORDER = ["Hub-Cloud", "PixelDrain", "FSL", "FSLv2", "Mega"];
+
+function parseSize(text) {
+  const m = text.match(/\[(.*?)\]/);
+  return m ? m[1] : null;
+}
+
+function normServer(url) {
+  const u = (url || "").toLowerCase();
+  if (u.includes("hubcloud")) return "Hub-Cloud";
+  if (u.includes("vcloud")) return "V-Cloud";
+  if (u.includes("pixeldrain")) return "PixelDrain";
+  if (u.includes("fsl-buckets")) return "FSLv2";
+  if (u.includes("boblover") || u.includes("fsl")) return "FSL";
+  if (u.includes("mega")) return "Mega";
+  return "Unknown";
+}
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ ok: false, error: "URL required" });
+
+  try {
+    const html = await axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    const $ = cheerio.load(html.data);
+
+    const items = [];
+    $("h2,h3,h4,h5").each((_, el) => {
+      const text = $(el).text().trim();
+      if (!/\b\d{3,4}p\b/i.test(text)) return;
+      const size = parseSize(text);
+      const servers = [];
+
+      $(el).nextUntil("h2,h3,h4,h5").find("a[href]").each((__, a) => {
+        const href = $(a).attr("href");
+        if (!href) return;
+        const sname = normServer(href);
+        if (["Hub-Cloud", "V-Cloud"].includes(sname)) {
+          servers.push({ server: sname, url: href });
+        }
+      });
+
+      if (servers.length) {
+        items.push({ quality: text, size, servers });
+      }
+    });
+
+    // Final order fix
+    const finalItems = items.map(it => {
+      const byName = {};
+      for (const s of it.servers) byName[s.server] = s.url;
+      const ordered = ORDER.filter(n => byName[n]).map(n => ({ server: n, url: byName[n] }));
+      return { quality: it.quality, size: it.size, servers: ordered };
+    });
+
+    return res.json({ ok: true, items: finalItems });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e.message) });
+  }
+}
